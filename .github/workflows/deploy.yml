@@ -1,0 +1,159 @@
+name: Deploy Dev Utils
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  APP_IMAGE_NAME: ghcr.io/${{ github.repository }}:latest
+  NODE_ENV: production
+
+jobs:
+  # ==========================================
+  # JOB 1: Build & Push Docker Image
+  # ==========================================
+  build-and-push:
+    name: Build & Push Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: runner
+          push: true
+          tags: ${{ env.APP_IMAGE_NAME }}
+          secrets: |
+            "dotenv_key=${{ secrets.DOTENV_PRIVATE_KEY_PRODUCTION }}"
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ==========================================
+  # JOB 2: Run Database Migrations
+  # ==========================================
+  migrate-db:
+    name: Run Migrations
+    needs: build-and-push
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 11.3.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DO_API_TOKEN }}
+
+      - name: Allow GitHub Actions IP in DigitalOcean
+        run: |
+          RUNNER_IP=$(curl -s https://api.ipify.org)
+          echo "RUNNER_IP=$RUNNER_IP" >> $GITHUB_ENV
+
+          echo "Adding IP: $RUNNER_IP to Trusted Sources..."
+          doctl databases firewalls append ${{ secrets.DO_DATABASE_ID }} --rule ip_addr:$RUNNER_IP
+
+          sleep 20
+
+      - name: Create CA certificate file
+        run: |
+          mkdir -p certs
+          echo "${{ secrets.DO_DB_CERT }}" > certs/do-ca-certificate.crt
+
+      - name: Run DB migrations
+        env:
+          DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
+          DATABASE_CA_CERT_PATH: certs/do-ca-certificate.crt
+        run: pnpm db:migrate
+
+      - name: Revoke GitHub Actions IP from DigitalOcean
+        if: always()
+        run: |
+          RULES_JSON=$(doctl databases firewalls list ${{ secrets.DO_DATABASE_ID }} -o json)
+          RULE_UUID=$(echo "$RULES_JSON" | jq -r ".[] | select(.value == \"$RUNNER_IP\") | .uuid")
+
+          if [ -n "$RULE_UUID" ] && [ "$RULE_UUID" != "null" ]; then
+            echo "Closing firewall. Removing rule: $RULE_UUID"
+            doctl databases firewalls remove ${{ secrets.DO_DATABASE_ID }} --uuid "$RULE_UUID"
+          else
+            echo "No matching rule found to remove."
+          fi
+
+  # ==========================================
+  # JOB 3: Deploy to VPS
+  # ==========================================
+  deploy:
+    name: Deploy to VPS
+    needs: migrate-db
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Prepare VPS directory
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: deploy
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: mkdir -p /var/www/dev-utils
+
+      - name: Upload Compose file to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: deploy
+          key: ${{ secrets.VPS_SSH_KEY }}
+          source: docker-compose.yml
+          target: /var/www/dev-utils
+
+      - name: Deploy on VPS via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: deploy
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -e
+            echo "${{ secrets.GHCR_PAT }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+            cd /var/www/dev-utils
+            docker compose pull
+            docker compose up -d --remove-orphans
+            docker image prune -f
