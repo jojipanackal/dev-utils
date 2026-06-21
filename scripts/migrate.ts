@@ -18,12 +18,17 @@ if (!dbUrl || !certPath) {
     throw new Error("Missing env variables!");
 }
 
+// Read the CA certificate
+const caCert = fs.readFileSync(path.resolve(ROOT_DIR, certPath), "utf8");
+
+// Encode CA cert as base64 for the connection string parameter
+const caBase64 = Buffer.from(caCert).toString("base64");
+
+// Build connection string with sslmode=verify-full and sslrootcert parameter
+const connectionStringWithSsl = `${dbUrl}?sslmode=verify-full&sslrootcert=${caBase64}`;
+
 const pool = new Pool({
-    connectionString: dbUrl,
-    ssl: {
-        ca: fs.readFileSync(path.resolve(ROOT_DIR, certPath), "utf8"),
-        rejectUnauthorized: true,
-    },
+    connectionString: connectionStringWithSsl,
 });
 
 const db = drizzle(pool);
