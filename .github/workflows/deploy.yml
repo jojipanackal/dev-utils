@@ -99,7 +99,7 @@ jobs:
       - name: Run DB migrations
         env:
           DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
-          DATABASE_CA_CERT_PATH: certs/do-ca-certificate.crt
+          NODE_EXTRA_CA_CERTS: certs/do-ca-certificate.crt
         run: pnpm db:migrate
 
       - name: Revoke GitHub Actions IP from DigitalOcean
