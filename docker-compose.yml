@@ -1,6 +1,6 @@
 services:
   app:
-    image: ghcr.io/jojijpanackal/dev-utils:latest
+    image: ghcr.io/jojipanackal/dev-utils:latest
     container_name: dev-utils
     restart: unless-stopped
     env_file:
