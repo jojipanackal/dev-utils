@@ -5,7 +5,7 @@ import { loadDotenvx } from "./dotenvx";
 loadDotenvx();
 
 const databaseUrl = process.env.DATABASE_URL;
-const databaseCaCertPath = process.env.DATABASE_CA_CERT_PATH;
+const databaseCaCert = process.env.DATABASE_CA_CERT;
 
 if (!databaseUrl) {
 	throw new Error("DATABASE_URL is required for Drizzle Kit");
@@ -17,9 +17,9 @@ export default defineConfig({
 	dialect: "postgresql",
 	dbCredentials: {
 		url: databaseUrl,
-		ssl: databaseCaCertPath
+		ssl: databaseCaCert
 			? {
-					ca: fs.readFileSync(databaseCaCertPath, "utf8"),
+					ca: databaseCaCert,
 					rejectUnauthorized: true,
 				}
 			: true,

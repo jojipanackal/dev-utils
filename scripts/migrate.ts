@@ -12,21 +12,23 @@ const ROOT_DIR = process.cwd();
 // loadDotenvx();
 
 const dbUrl = process.env.DATABASE_URL;
-const certPath = process.env.DATABASE_CA_CERT_PATH;
+const databaseCaCert = process.env.DATABASE_CA_CERT;
 
 if (!dbUrl) {
     throw new Error("Missing env variable DATABASE_URL!");
 }
 
-// Use NODE_EXTRA_CA_CERTS in CI to point Node's TLS store to the DB CA file (recommended).
-// If DATABASE_CA_CERT_PATH is provided, CI should still write the file to that path so other tools can use it.
-
 const pool = new Pool({
     connectionString: dbUrl,
-    ssl: {
-        // Keep strict verification; NODE_EXTRA_CA_CERTS will provide the trusted CA in CI
-        rejectUnauthorized: true,
-    },
+    ssl: databaseCaCert
+        ? {
+              ca: databaseCaCert,
+              rejectUnauthorized: true,
+          }
+        : {
+              // Keep strict verification; NODE_EXTRA_CA_CERTS will provide the trusted CA in CI if needed
+              rejectUnauthorized: true,
+          },
 });
 
 const db = drizzle(pool);
@@ -34,8 +36,8 @@ const db = drizzle(pool);
 async function runMigrations() {
     try {
         console.log("Connecting to the database to migrate...");
-        if (certPath) {
-            console.log(`DATABASE_CA_CERT_PATH is set to: ${certPath}. Ensure NODE_EXTRA_CA_CERTS points to this file in CI.`);
+        if (databaseCaCert) {
+            console.log("DATABASE_CA_CERT is provided inline.");
         }
         
         // Point exactly to the drizzle folder at the root of your project
